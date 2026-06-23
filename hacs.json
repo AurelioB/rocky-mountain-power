@@ -3,6 +3,7 @@
     "render_readme": true,
     "hacs": "1.6.0",
     "domains": [
+        "sensor",
         "energy"
     ],
     "homeassistant": "2023.11.3"

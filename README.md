@@ -16,21 +16,48 @@ _Component to integrate with [Rocky Mountain Power][rmp]._
 
 ## Installation
 
-1. Using your tool of choice, open the directory (folder) for your HA configuration (where you find `configuration.yaml`).
-2. If you do not have a `custom_components` directory (folder) there, you need to create it.
-3. In the `custom_components` directory (folder) create a new folder called `rocky_mountain_power`.
-4. Download _all_ the files from the `custom_components/rocky_mountain_power/` directory (folder) in this repository.
-5. Place the files you downloaded in the new directory (folder) you created.
-6. Restart Home Assistant
-7. In the HA UI go to "Configuration" -> "Integrations" click "+" and search for "Rocky Mountain Power"
+### Option 1: HACS (Recommended)
+
+[![Open your Home Assistant instance and open this repository in HACS][hacs-repository-badge]][hacs-repository]
+
+1. Click the button above, or open HACS in Home Assistant.
+2. Go to HACS -> Integrations -> three dots menu -> Custom repositories.
+3. Add `https://github.com/AurelioB/rocky-mountain-power` as an Integration.
+4. Search for "Rocky Mountain Power" and install it.
+5. Restart Home Assistant.
+6. Continue to Configuration.
+
+### Option 2: Manual Installation
+
+1. Download the latest release from [GitHub Releases][releases].
+2. Extract the release and copy `custom_components/rocky_mountain_power` to your Home Assistant `custom_components` directory:
+
+    ```text
+    config/
+    └── custom_components/
+        └── rocky_mountain_power/
+            ├── __init__.py
+            ├── config_flow.py
+            ├── manifest.json
+            └── ...
+    ```
+
+3. Restart Home Assistant.
+4. Continue to Configuration.
+
+Manual installs do not receive HACS update notifications.
 
 ## Configuration is done in the UI
+
+[![Open your Home Assistant instance and start setting up Rocky Mountain Power][config-flow-badge]][config-flow]
 
 Before continuing, make sure to turn off Multi Factor Authentication from your
 Rocky Mountain Power account. You can turn it off from the "Manage account" link on the left side of the page.
 
-1. Username: enter your Rocky Mountain Power username
-2. Password: enter your Rocky Mountain Power password
+1. Click the button above, or go to Settings -> Devices & services.
+2. Click Add Integration and search for "Rocky Mountain Power".
+3. Username: enter your Rocky Mountain Power username.
+4. Password: enter your Rocky Mountain Power password.
 
 ## Sensors
 
@@ -47,14 +74,18 @@ If you want to contribute to this please read the [Contribution guidelines](CONT
 [rmp]: https://www.rockymountainpower.net
 [buymecoffee]: https://www.buymeacoffee.com/jaredhobbs
 [buymecoffeebadge]: https://img.shields.io/badge/buy%20me%20a%20coffee-donate-yellow.svg?style=for-the-badge
-[commits-shield]: https://img.shields.io/github/commit-activity/y/custom-components/blueprint.svg?style=for-the-badge
-[commits]: https://github.com/jaredhobbs/rocky-mountain-power/commits/main
+[commits-shield]: https://img.shields.io/github/commit-activity/y/AurelioB/rocky-mountain-power.svg?style=for-the-badge
+[commits]: https://github.com/AurelioB/rocky-mountain-power/commits/main
+[config-flow-badge]: https://my.home-assistant.io/badges/config_flow_start.svg
+[config-flow]: https://my.home-assistant.io/redirect/config_flow_start/?domain=rocky_mountain_power
 [hacs]: https://github.com/custom-components/hacs
 [hacsbadge]: https://img.shields.io/badge/HACS-Custom-orange.svg?style=for-the-badge
+[hacs-repository-badge]: https://my.home-assistant.io/badges/hacs_repository.svg
+[hacs-repository]: https://my.home-assistant.io/redirect/hacs_repository/?owner=AurelioB&repository=rocky-mountain-power&category=integration
 [exampleimg]: rmp.png
 [forum-shield]: https://img.shields.io/badge/community-forum-brightgreen.svg?style=for-the-badge
 [forum]: https://community.home-assistant.io/
-[license-shield]: https://img.shields.io/github/license/custom-components/blueprint.svg?style=for-the-badge
+[license-shield]: https://img.shields.io/github/license/AurelioB/rocky-mountain-power.svg?style=for-the-badge
 [maintenance-shield]: https://img.shields.io/badge/maintainer-Jared%20Hobbs%20%40jaredhobbs-blue.svg?style=for-the-badge
-[releases-shield]: https://img.shields.io/github/release/custom-components/blueprint.svg?style=for-the-badge
-[releases]: https://github.com/jaredhobbs/rocky-mountain-power/releases
+[releases-shield]: https://img.shields.io/github/release/AurelioB/rocky-mountain-power.svg?style=for-the-badge
+[releases]: https://github.com/AurelioB/rocky-mountain-power/releases
