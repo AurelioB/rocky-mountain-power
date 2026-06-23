@@ -52,7 +52,7 @@ class RockyMountainPowerCoordinator(DataUpdateCoordinator[dict[str, Forecast]]):
         self.api = RockyMountainPower(
             entry_data[CONF_USERNAME],
             entry_data[CONF_PASSWORD],
-            entry_data[CONF_SELENIUM_HOST],
+            entry_data.get(CONF_SELENIUM_HOST, "localhost"),
         )
 
         @callback

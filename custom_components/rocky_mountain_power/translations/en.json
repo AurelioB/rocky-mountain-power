@@ -6,8 +6,7 @@
         "description": "Make sure multi factor authentication has been disabled.",
         "data": {
           "username": "Username",
-          "password": "Password",
-          "selenium_host": "Selenium host"
+          "password": "Password"
         }
       },
       "reauth_confirm": {

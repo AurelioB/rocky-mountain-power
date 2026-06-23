@@ -24,12 +24,6 @@ _Component to integrate with [Rocky Mountain Power][rmp]._
 6. Restart Home Assistant
 7. In the HA UI go to "Configuration" -> "Integrations" click "+" and search for "Rocky Mountain Power"
 
-## Install the Selenium Standalone Chrome addon
-
-This integration requires Selenium in order to scrape the electricity usage data from your account.
-
-[![Open your Home Assistant instance and show the add add-on repository dialog with a specific repository URL pre-filled.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fjaredhobbs%2Fha-addons)
-
 ## Configuration is done in the UI
 
 Before continuing, make sure to turn off Multi Factor Authentication from your
@@ -37,7 +31,6 @@ Rocky Mountain Power account. You can turn it off from the "Manage account" link
 
 1. Username: enter your Rocky Mountain Power username
 2. Password: enter your Rocky Mountain Power password
-3. Selenium host: leave the default if you're running the addon above
 
 ## Sensors
 

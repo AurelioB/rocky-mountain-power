@@ -1,191 +1,316 @@
 """Implementation of Rocky Mountain Power API."""
-import atexit
+from __future__ import annotations
+
+import base64
+import html
 import locale
-import os.path
-import sys
-import time
 import dataclasses
 from datetime import date, datetime, time as datetime_time, timedelta
 from enum import Enum
 import json
 import logging
+import re
+from http.cookiejar import CookieJar
 from typing import Any, Optional
+from urllib import error, parse, request
 
 import arrow
-
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.common.exceptions import ElementClickInterceptedException, TimeoutException, NoSuchElementException
 
 _LOGGER = logging.getLogger(__file__)
 DEBUG_LOG_RESPONSE = False
 locale.setlocale(locale.LC_ALL, "en_US")
 
 
+def _b64decode(value: str) -> bytes:
+    """Decode padded or unpadded base64 text."""
+    return base64.b64decode(value + "=" * (-len(value) % 4))
+
+
+def _lookup(value: Any, key: str) -> Any:
+    """Find a key anywhere in a nested dict/list response."""
+    if isinstance(value, dict):
+        if key in value:
+            return value[key]
+        for child in value.values():
+            found = _lookup(child, key)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _lookup(child, key)
+            if found is not None:
+                return found
+    return None
+
+
+def _first(value: dict[str, Any], dotted_path: str) -> dict[str, Any]:
+    """Return the first object at a dotted response path."""
+    current: Any = value
+    for part in dotted_path.split("."):
+        if not isinstance(current, dict):
+            return {}
+        current = current.get(part)
+    if isinstance(current, list):
+        return current[0] if current else {}
+    if isinstance(current, dict):
+        return current
+    return {}
+
+
 class RockyMountainPowerUtility:
+    """HTTP client for the Rocky Mountain Power web app."""
+
+    BASE_URL = "https://csapps.rockymountainpower.net"
     LOGIN_URL = "https://csapps.rockymountainpower.net/idm/login"
+    AUTHORIZE_URL = "https://csapps.rockymountainpower.net/oauth2/authorization/B2C_1A_PAC_SIGNIN"
+    B2C_BASE_URL = "https://login.csapps.rockymountainpower.net"
     TZ = "America/Denver"
 
-    def __init__(self, selenium_host: str = "localhost"):
-        self.selenium_host: str = selenium_host
+    def __init__(self) -> None:
         self.user_id = None
+        self.web_user_id = None
         self.account = {}
+        self.agreement = {}
         self.forecast = {}
-        self.xhrs = {}
+        self._cookies = CookieJar()
+        self._opener = None
+        self._aes_key: bytes | None = None
+        self._signing_key = None
+        self._encryption_key = None
 
-    def on_quit(self, *args, **kwargs):
+    def on_quit(self, *args: Any, **kwargs: Any) -> None:
+        """Close the logical session."""
+        self._aes_key = None
+
+    def login(self, username: str, password: str) -> None:
+        """Log in and load the active account."""
         try:
-            self.br.close()
-            self.br.quit()
-        except:
-            pass
+            self._opener = request.build_opener(
+                request.HTTPCookieProcessor(self._cookies),
+                request.HTTPRedirectHandler(),
+            )
+            self._request("GET", self.LOGIN_URL)
+            self._handshake()
+            auth_html = self._request("GET", self.AUTHORIZE_URL).decode()
+            settings = self._parse_b2c_settings(auth_html)
 
-    def get_el(self, by, val, keys=None, multi=False, required=True, text=None):
-        func = self.br.find_element
-        if multi or text:
-            func = self.br.find_elements
-        try:
-            el = func(by, val)
-            if keys:
-                for k in keys:
-                    el.send_keys(k)
-            if text:
-                el = [e for e in el if e.text == text][0]
-            return el
-        except:
-            if required:
-                raise
-            return [] if multi else None
+            tenant = settings["hosts"]["tenant"]
+            policy = settings["hosts"]["policy"]
+            trans_id = settings["transId"]
+            csrf = settings["csrf"]
+            authorize_url = self.AUTHORIZE_URL
 
-    def click(self, els):
-        for el in els:
-            try:
-                el.click()
-                return
-            except:
-                pass
-
-    def find_el(self, selectors):
-        for by, selector in selectors:
-            target = self.get_el(by, selector, required=False)
-            if target is not None and target.is_displayed():
-                return target
-
-    def init_browser(self):
-        options = webdriver.ChromeOptions()
-        options.enable_downloads = True
-        options.add_argument("--disable-extensions")
-        options.add_argument("--mute-audio")
-        prefs = {
-            "download.prompt_for_download": False,
-            "download.directory_upgrade": True,
-            "profile.default_content_settings": {
-                "images": 2,
-            },
-        }
-        options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
-        options.add_experimental_option("prefs", prefs)
-
-        self.br = webdriver.Remote(
-            command_executor=f"http://{self.selenium_host}:4444",
-            options=options,
-        )
-        atexit.register(self.on_quit)
-        sys.excepthook = self.on_quit
-        self.br.implicitly_wait(30)
-        self.wait = WebDriverWait(self.br, 30)
-
-    def log_filter(self, log):
-        return (
-            # is an actual response
-            log["method"] == "Network.responseReceived"
-            # and json
-            and "json" in log["params"]["response"]["mimeType"]
-        )
-
-    def send(self, cmd, params=None):
-        resource = f"/session/{self.br.session_id}/chromium/send_command_and_get_result"
-        url = self.br.command_executor._url + resource
-        body = json.dumps({"cmd": cmd, "params": params or {}})
-        response = self.br.command_executor._request("POST", url, body)
-        return response.get("value")
-
-    def get_xhrs(self):
-        logs_raw = self.br.get_log("performance")
-        logs = [json.loads(lr["message"])["message"] for lr in logs_raw]
-        xhrs = {}
-        for log in filter(self.log_filter, logs):
-            resp_url = log["params"]["response"]["url"]
-            request_id = log["params"]["requestId"]
-            try:
-                xhrs[resp_url] = self.send("Network.getResponseBody", {"requestId": request_id})["body"]
-            except:
-                pass
-        self.xhrs = {
-            **self.xhrs,
-            **xhrs,
-        }
-        return self.xhrs
-
-    def login(self, username, password):
-        self.init_browser()
-        self.br.get(self.LOGIN_URL)
-        try:
-            self.wait.until(EC.title_is("Sign in"))
-        except:
-            raise CannotConnect
-        self.br.fullscreen_window()
-        target = self.get_el(By.CSS_SELECTOR, "wcss-cookie-banner>aside>button", required=False)
-        if target and target.is_displayed():
-            target.click()
-        self.wait.until(
-            EC.frame_to_be_available_and_switch_to_it(
-                (
-                    By.CSS_SELECTOR,
-                    "iframe#loginframe",
+            login_url = (
+                f"{self.B2C_BASE_URL}{tenant}/SelfAsserted?"
+                f"{parse.urlencode({'tx': trans_id, 'p': policy})}"
+            )
+            login_body = parse.urlencode(
+                {
+                    "request_type": "RESPONSE",
+                    "signInName": username,
+                    "password": password,
+                }
+            ).encode()
+            login_response = json.loads(
+                self._request(
+                    "POST",
+                    login_url,
+                    data=login_body,
+                    headers={
+                        "Accept": "application/json, text/javascript, */*; q=0.01",
+                        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                        "Origin": self.B2C_BASE_URL,
+                        "Referer": authorize_url,
+                        "X-CSRF-TOKEN": csrf,
+                        "X-Requested-With": "XMLHttpRequest",
+                    },
                 )
             )
-        )
-        self.get_el(
-            By.CSS_SELECTOR,
-            "input#signInName",
-            keys=username,
-        )
-        self.get_el(
-            By.CSS_SELECTOR,
-            "input#password",
-            keys=password,
-        )
-        target = self.get_el(By.CSS_SELECTOR, "button#next")
-        target.click()
-        try:
-            self.wait.until(EC.title_is("My account"))
-        except:
-            raise InvalidAuth
+            if str(login_response.get("status")) != "200":
+                raise InvalidAuth
 
-        xhrs = self.get_xhrs()
-        me = json.loads(xhrs["https://csapps.rockymountainpower.net/api/user/me"])
-        self.user_id = me["id"]
-        accounts = json.loads(xhrs["https://csapps.rockymountainpower.net/api/self-service/getAccountList"])
-        self.account = accounts["getAccountListResponseBody"]["accountList"]["webAccount"][0]
-        return xhrs
+            confirmed_url = (
+                f"{self.B2C_BASE_URL}{tenant}/api/CombinedSigninAndSignup/confirmed?"
+                f"{parse.urlencode({'rememberMe': 'false', 'csrf_token': csrf, 'tx': trans_id, 'p': policy})}"
+            )
+            self._request("GET", confirmed_url, headers={"Referer": authorize_url})
+            self._request("GET", f"{self.BASE_URL}/secure/my-account/dashboard")
 
-    def goto_energy_usage(self):
-        self.br.fullscreen_window()
-        self.br.get("https://csapps.rockymountainpower.net/secure/my-account/energy-usage")
-        try:
-            self.wait.until(EC.title_is("Energy usage"))
-            time.sleep(3)
-        except:
+            me = self._encrypted_post("/api/user/me", {})
+            self.user_id = me.get("id") or me.get("userId")
+            self.web_user_id = me.get("webUserId") or me.get("webUserID") or self.user_id
+
+            accounts = self._encrypted_post(
+                "/api/self-service/getAccountList",
+                {
+                    "getAccountListRequestBody": {
+                        "request": {"webUserID": self.web_user_id},
+                        "domain": {"pacifiCorpSubsidiary": "RockyMountainPower"},
+                    }
+                },
+            )
+            self.account = _first(
+                accounts,
+                "getAccountListResponseBody.accountList.webAccount",
+            )
+            self._load_agreement()
+        except InvalidAuth:
+            raise
+        except error.HTTPError as err:
+            if err.code in (400, 401, 403):
+                raise InvalidAuth from err
+            raise CannotConnect from err
+        except Exception as err:
+            raise CannotConnect from err
+
+    def _request(
+        self,
+        method: str,
+        url: str,
+        data: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> bytes:
+        req = request.Request(
+            url,
+            data=data,
+            method=method,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36"
+                ),
+                **(headers or {}),
+            },
+        )
+        if self._opener is None:
             raise CannotConnect
+        with self._opener.open(req, timeout=60) as resp:
+            return resp.read()
+
+    def _handshake(self) -> None:
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import padding, rsa
+
+        self._signing_key = rsa.generate_private_key(public_exponent=65537, key_size=4096)
+        self._encryption_key = rsa.generate_private_key(public_exponent=65537, key_size=4096)
+        signing_pub = self._signing_key.public_key().public_bytes(
+            serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        encryption_pub = self._encryption_key.public_key().public_bytes(
+            serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        body = (
+            base64.b64encode(signing_pub)
+            + b":"
+            + base64.b64encode(encryption_pub)
+        )
+        response = self._request(
+            "POST",
+            f"{self.BASE_URL}/idm/handshake",
+            data=body,
+            headers={
+                "Accept": "text/plain, */*",
+                "Content-Type": "application/octet-stream",
+                "Referer": f"{self.BASE_URL}/",
+                "X-WCSSS-Policy": "0",
+                "X-XSRF-TOKEN": self._xsrf_token(),
+            },
+        )
+        encrypted_key = _b64decode(response.decode().strip())
+        self._aes_key = self._encryption_key.decrypt(
+            encrypted_key,
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None,
+            ),
+        )
+
+    def _encrypted_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        import os
+
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import padding
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+        if self._aes_key is None or self._signing_key is None:
+            raise CannotConnect
+        plaintext = json.dumps(payload, separators=(",", ":")).encode()
+        signature = self._signing_key.sign(plaintext, padding.PKCS1v15(), hashes.SHA256())
+        iv = os.urandom(12)
+        encrypted = AESGCM(self._aes_key).encrypt(iv, plaintext, None)
+        body = base64.b64encode(iv) + base64.b64encode(encrypted)
+        response = self._request(
+            "POST",
+            f"{self.BASE_URL}{path}",
+            data=body,
+            headers={
+                "Accept": "application/json, text/plain, */*",
+                "Content-Type": "application/json",
+                "Origin": self.BASE_URL,
+                "Referer": f"{self.BASE_URL}/",
+                "X-WCSSS-Content-Signature": base64.b64encode(signature).decode(),
+                "X-XSRF-TOKEN": self._xsrf_token(),
+            },
+        )
+        return json.loads(response or b"{}")
+
+    def _parse_b2c_settings(self, page: str) -> dict[str, Any]:
+        match = re.search(r"var\s+SETTINGS\s*=\s*({.*?});", page, re.DOTALL)
+        if not match:
+            raise CannotConnect
+        return json.loads(html.unescape(match.group(1)))
+
+    def _xsrf_token(self) -> str:
+        for cookie in self._cookies:
+            if cookie.name == "XSRF-TOKEN":
+                return cookie.value
+        raise CannotConnect
+
+    def _agreement_identity(self) -> dict[str, str]:
+        agreement = self.agreement or self.account
+        return {
+            "customerIDN": str(_lookup(agreement, "customerIDN") or _lookup(self.account, "customerIDN") or ""),
+            "accountSequence": str(_lookup(agreement, "accountSequence") or _lookup(self.account, "accountSequence") or ""),
+            "agreementSequence": str(_lookup(agreement, "agreementSequence") or _lookup(self.account, "agreementSequence") or ""),
+        }
+
+    def _load_agreement(self) -> None:
+        customer_idn = _lookup(self.account, "customerIDN")
+        account_sequence = _lookup(self.account, "accountSequence")
+        if customer_idn is None or account_sequence is None:
+            self.agreement = self.account
+            return
+        details = self._encrypted_post(
+            "/api/account/getMeteredAgreements",
+            {
+                "getMeteredAgreementsRequestBody": {
+                    "agreementRequest": {
+                        "customerIDN": str(customer_idn),
+                        "accountSequence": str(account_sequence),
+                    },
+                    "source": "WEBCS",
+                }
+            },
+        )
+        self.agreement = (
+            _first(details, "getMeteredAgreementsResponseBody.meteredAgreementList.meteredAgreement")
+            or _first(details, "getMeteredAgreementsResponseBody.agreementList.agreement")
+            or self.account
+        )
 
     def get_forecast(self):
-        self.goto_energy_usage()
-
-        xhrs = self.get_xhrs()
-        details = json.loads(xhrs["https://csapps.rockymountainpower.net/api/energy-usage/getMeterType"])
+        details = self._encrypted_post(
+            "/api/energy-usage/getMeterType",
+            {
+                "getMeterTypeRequestBody": {
+                    "agreement": self._agreement_identity(),
+                    "webUserid": self.web_user_id,
+                }
+            },
+        )
         # {
         #   "isAMIMeter":true,
         #   "businessUnitCode":"11441",
@@ -209,16 +334,19 @@ class RockyMountainPowerUtility:
         return self.forecast
 
     def get_usage_by_month(self):
-        xhr_url = "https://csapps.rockymountainpower.net/api/account/getUsageHistoryAndGraphDataV1"
-        self.goto_energy_usage()
-        target = self.get_el(By.CSS_SELECTOR, "div.mat-form-field-infix", multi=True)
-        target[3].click()
-        # Selects monthly data for the past 2 years
-        target = self.get_el(By.CSS_SELECTOR, ".mat-option", multi=True)[0]
-        target.click()
-        self.wait.until(lambda _: xhr_url in self.get_xhrs())
-        xhrs = self.get_xhrs()
-        details = json.loads(xhrs[xhr_url])
+        details = self._encrypted_post(
+            "/api/account/getUsageHistoryAndGraphDataV1",
+            {
+                "getUsageHistoryAndGraphDataV1RequestBody": {
+                    "request": {
+                        "numberOfMonths": 24,
+                        "agreement": self._agreement_identity(),
+                    },
+                    "graphView": "MONTH",
+                    "graphWindow": "TWENTY_FOUR_MONTHS",
+                }
+            },
+        )
         usage = []
         # {
         #   "usagePeriod":"Oct 2021",
@@ -254,70 +382,75 @@ class RockyMountainPowerUtility:
         return usage
 
     def get_usage_by_day(self, months=1):
-        xhr_url = "https://csapps.rockymountainpower.net/api/energy-usage/getUsageForDateRange"
-        self.goto_energy_usage()
-        target = self.get_el(By.CSS_SELECTOR, "div.mat-form-field-infix", multi=True)
-        target[3].click()
-        # Selects daily data for the past month
-        target = self.get_el(By.CSS_SELECTOR, ".mat-option", multi=True)[2]
-        target.click()
-        self.wait.until(lambda _: xhr_url in self.get_xhrs())
         usage = []
-        while months > 0:
-            xhrs = self.get_xhrs()
-            details = json.loads(xhrs[xhr_url])
-            # {
-            #   "usagePeriodEndDate":"2023-10-24",
-            #   "dollerAmount":"$5",
-            #   "numberOfDays":1,
-            #   "kwhUsageQuantity":"37.85",
-            #   "kwhReverseUsageQuantity":"0.00",
-            #   "avgTemperature":"56.5",
-            #   "missingDataFlag":"N",
-            #   "displayDollarAmount":"Y"
-            # },
-            for d in details.get("getUsageForDateRangeResponseBody", {}).get("dailyUsageList", {}).get("usgHistoryLineItem", []):
-                usage_date = date.fromisoformat(d["usagePeriodEndDate"])
-                start_time = arrow.get(datetime.combine(usage_date, datetime_time.min), self.TZ).datetime
-                end_time = start_time + timedelta(days=1)
-                amount = None
-                try:
-                    amount = locale.atof(d.get("dollerAmount", "").strip("$")) or None
-                except ValueError:
-                    pass
-                usage.append({
-                    "startTime": start_time,
-                    "endTime": end_time - timedelta(seconds=1),
-                    "usage": float(d.get("kwhUsageQuantity", 0)),
-                    "amount": amount,
-                })
-            months -= 1
-            if months > 0:
-                self.xhrs = {}
-                target = self.get_el(By.CSS_SELECTOR, "button.link", text="PREVIOUS")
-                try:
-                    target.click()
-                except ElementClickInterceptedException:
-                    break
-                try:
-                    self.wait.until(lambda _: xhr_url in self.get_xhrs())
-                except TimeoutException:
-                    break
+        end = arrow.now(self.TZ).date()
+        start = end - timedelta(days=max(1, months or 1) * 31)
+        details = self._encrypted_post(
+            "/api/energy-usage/getUsageForDateRange",
+            {
+                "getUsageForDateRangeRequestBody": {
+                    "agreement": self._agreement_identity(),
+                    "dateRange": {
+                        "startDate": start.isoformat(),
+                        "endDate": end.isoformat(),
+                    },
+                    "graphView": "DAY",
+                    "graphWindow": "ONE_MONTH",
+                }
+            },
+        )
+        # {
+        #   "usagePeriodEndDate":"2023-10-24",
+        #   "dollerAmount":"$5",
+        #   "numberOfDays":1,
+        #   "kwhUsageQuantity":"37.85",
+        #   "kwhReverseUsageQuantity":"0.00",
+        #   "avgTemperature":"56.5",
+        #   "missingDataFlag":"N",
+        #   "displayDollarAmount":"Y"
+        # },
+        for d in details.get("getUsageForDateRangeResponseBody", {}).get("dailyUsageList", {}).get("usgHistoryLineItem", []):
+            usage_date = date.fromisoformat(d["usagePeriodEndDate"])
+            start_time = arrow.get(datetime.combine(usage_date, datetime_time.min), self.TZ).datetime
+            end_time = start_time + timedelta(days=1)
+            amount = None
+            try:
+                amount = locale.atof(d.get("dollerAmount", "").strip("$")) or None
+            except ValueError:
+                pass
+            usage.append({
+                "startTime": start_time,
+                "endTime": end_time - timedelta(seconds=1),
+                "usage": float(d.get("kwhUsageQuantity", 0)),
+                "amount": amount,
+            })
         return usage
 
     def get_usage_by_hour(self, days=1):
-        xhr_url = "https://csapps.rockymountainpower.net/api/energy-usage/getIntervalUsageForDate"
-        self.goto_energy_usage()
-        target = self.get_el(By.CSS_SELECTOR, "div.mat-form-field-infix", multi=True)
-        target[3].click()
-        # Selects hourly data for the past day
-        target = self.get_el(By.CSS_SELECTOR, ".mat-option", multi=True)[-1]
-        target.click()
-        self.wait.until(lambda _: xhr_url in self.get_xhrs())
         usage = []
-        while days > 0:
-            xhrs = self.get_xhrs()
-            details = json.loads(xhrs[xhr_url])
+        site_idn = _lookup(self.agreement, "siteIDN") or _lookup(self.account, "siteIDN")
+        register_type = _lookup(self.agreement, "registerType") or "KWH"
+        service_sequence = _lookup(self.agreement, "serviceSequence") or _lookup(self.account, "serviceSequence")
+        if site_idn is None or service_sequence is None:
+            _LOGGER.debug("Hourly usage unavailable: missing site/service fields")
+            return usage
+
+        for offset in range(max(1, days or 1)):
+            read_date = arrow.now(self.TZ).date() - timedelta(days=offset)
+            details = self._encrypted_post(
+                "/api/energy-usage/getIntervalUsageForDate",
+                {
+                    "getIntervalUsageForDateRequestBody": {
+                        "request": {
+                            "siteIDN": str(site_idn),
+                            "registerType": str(register_type),
+                            "serviceSequence": str(service_sequence),
+                            "readDate": read_date.isoformat(),
+                            "agreement": self._agreement_identity(),
+                        }
+                    }
+                },
+            )
             # {
             #   "readDate":"2023-11-22",
             #   "readTime":"01:00",
@@ -332,36 +465,10 @@ class RockyMountainPowerUtility:
                     "usage": float(d.get("usage", 0)),
                     "amount": None,
                 })
-            days -= 1
-            if days > 0:
-                self.xhrs = {}
-                target = self.get_el(By.CSS_SELECTOR, "button.link", text="PREVIOUS")
-                try:
-                    target.click()
-                except ElementClickInterceptedException:
-                    break
-                try:
-                    self.wait.until(lambda _: xhr_url in self.get_xhrs())
-                except TimeoutException:
-                    break
         return usage
 
     def download_daily_usage(self):
-        self.goto_energy_usage()
-        target = self.get_el(By.CSS_SELECTOR, "div.mat-form-field-infix", multi=True)
-        target[3].click()
-        target = self.get_el(By.CSS_SELECTOR, ".mat-option", multi=True)[-1]
-        target.click()
-        target = self.get_el(By.LINK_TEXT, "DOWNLOAD GREEN BUTTON DATA")
-        target.click()
-        self.wait.until(lambda d: len(d.get_downloadable_files()) == 1)
-        files = self.br.get_downloadable_files()
-        downloadable_file = files[0]
-        target_directory = "/tmp"
-        self.br.download_file(downloadable_file, target_directory)
-        target_file = os.path.join(target_directory, downloadable_file)
-        with open(target_file, "r") as file:
-            return file.read()
+        raise NotImplementedError("Green Button download is not available without a browser session")
 
 
 class CannotConnect(Exception):
@@ -440,14 +547,14 @@ class RockyMountainPower:
         self,
         username: str,
         password: str,
-        selenium_host: str = "localhost",
+        legacy_host: str = "localhost",
     ) -> None:
         """Initialize."""
         self.username: str = username
         self.password: str = password
         self.account = {}
         self.customer_id = None
-        self.utility: RockyMountainPowerUtility = RockyMountainPowerUtility(selenium_host)
+        self.utility: RockyMountainPowerUtility = RockyMountainPowerUtility()
 
     def login(self) -> None:
         """Login to the utility website for access.
@@ -569,46 +676,3 @@ class RockyMountainPower:
             return self.utility.get_usage_by_hour(days=period)
         else:
             raise ValueError(f"aggregate_type {aggregate_type} is not valid")
-
-if __name__ == '__main__':
-    api = RockyMountainPower(
-        'USERNAME',
-        'PASSWORD',
-        'localhost') # localhost==selenium host
-
-    errors: dict[str, str] = {}
-    try:
-        api.login()
-        print("Logged in, trying to fetch forecasts")
-        forecasts = api.get_forecast()
-        print("Got forecasts")
-        print(forecasts)
-        print("Fetching cost reads")
-        cost_reads = api.get_cost_reads(AggregateType.MONTH)
-        print(cost_reads)
-
-        cost_reads = api.get_cost_reads(AggregateType.DAY, 24)
-        print(cost_reads)
-
-        cost_reads = api.get_cost_reads(AggregateType.HOUR, 60)
-        print(cost_reads)
-    except InvalidAuth:
-        errors["base"] = "invalid_auth"
-    except CannotConnect:
-        errors["base"] = "cannot_connect"
-    except NoSuchElementException as ne:
-        errors["no_such_element"] = ne
-        print(f"No such element: {ne}")
-        print(ne)
-    except Exception as e:
-        print("Unhandled exception")
-        print(e)
-        print(e.__class__.__name__)
-    finally:
-        api.end_session()
-
-    if errors:
-        print("Got errors")
-        print(errors)
-    else:
-        print("No errors")

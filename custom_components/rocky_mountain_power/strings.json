@@ -6,8 +6,7 @@
         "description": "Make sure multi factor authentication has been disabled.",
         "data": {
           "username": "[%key:common::config_flow::data::username%]",
-          "password": "[%key:common::config_flow::data::password%]",
-          "selenium_host": "Selenium host"
+          "password": "[%key:common::config_flow::data::password%]"
         }
       },
       "reauth_confirm": {

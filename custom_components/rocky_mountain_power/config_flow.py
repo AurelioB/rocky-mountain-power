@@ -12,7 +12,7 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
 
-from .const import CONF_SELENIUM_HOST, DOMAIN
+from .const import DOMAIN
 from .rocky_mountain_power import (
     CannotConnect,
     InvalidAuth,
@@ -25,7 +25,6 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_USERNAME): str,
         vol.Required(CONF_PASSWORD): str,
-        vol.Required(CONF_SELENIUM_HOST, default="5f203b37-selenium-standalone-chrome"): str,
     }
 )
 
@@ -35,7 +34,6 @@ def _validate_login(login_data: dict[str, str]) -> dict[str, str]:
     api = RockyMountainPower(
         login_data[CONF_USERNAME],
         login_data[CONF_PASSWORD],
-        login_data[CONF_SELENIUM_HOST],
     )
     errors: dict[str, str] = {}
     try:
