@@ -237,24 +237,33 @@ class RockyMountainPowerUtility:
 
         if self._aes_key is None or self._signing_key is None:
             raise CannotConnect
+        _LOGGER.debug("Rocky Mountain Power encrypted POST %s", path)
         plaintext = json.dumps(payload, separators=(",", ":")).encode()
         signature = self._signing_key.sign(plaintext, padding.PKCS1v15(), hashes.SHA256())
         iv = os.urandom(12)
         encrypted = AESGCM(self._aes_key).encrypt(iv, plaintext, None)
         body = base64.b64encode(iv) + base64.b64encode(encrypted)
-        response = self._request(
-            "POST",
-            f"{self.BASE_URL}{path}",
-            data=body,
-            headers={
-                "Accept": "application/json, text/plain, */*",
-                "Content-Type": "application/json",
-                "Origin": self.BASE_URL,
-                "Referer": f"{self.BASE_URL}/",
-                "X-WCSSS-Content-Signature": base64.b64encode(signature).decode(),
-                "X-XSRF-TOKEN": self._xsrf_token(),
-            },
-        )
+        try:
+            response = self._request(
+                "POST",
+                f"{self.BASE_URL}{path}",
+                data=body,
+                headers={
+                    "Accept": "application/json, text/plain, */*",
+                    "Content-Type": "application/json",
+                    "Origin": self.BASE_URL,
+                    "Referer": f"{self.BASE_URL}/",
+                    "X-WCSSS-Content-Signature": base64.b64encode(signature).decode(),
+                    "X-XSRF-TOKEN": self._xsrf_token(),
+                },
+            )
+        except error.HTTPError as err:
+            _LOGGER.error(
+                "Rocky Mountain Power encrypted POST %s failed with HTTP %s",
+                path,
+                err.code,
+            )
+            raise
         return json.loads(response or b"{}")
 
     def _parse_b2c_settings(self, page: str) -> dict[str, Any]:
@@ -272,14 +281,33 @@ class RockyMountainPowerUtility:
     def _agreement_identity(self) -> dict[str, str]:
         agreement = self.agreement or self.account
         return {
-            "customerIDN": str(_lookup(agreement, "customerIDN") or _lookup(self.account, "customerIDN") or ""),
-            "accountSequence": str(_lookup(agreement, "accountSequence") or _lookup(self.account, "accountSequence") or ""),
-            "agreementSequence": str(_lookup(agreement, "agreementSequence") or _lookup(self.account, "agreementSequence") or ""),
+            "customerIDN": str(
+                _lookup(agreement, "customerIDN")
+                or _lookup(self.account, "customerIDN")
+                or _lookup(self.account.get("customer"), "idn")
+                or ""
+            ),
+            "accountSequence": str(
+                _lookup(agreement, "accountSequence")
+                or _lookup(self.account, "accountSequence")
+                or self.account.get("sequence")
+                or ""
+            ),
+            "agreementSequence": str(
+                _lookup(agreement, "agreementSequence")
+                or _lookup(self.account, "agreementSequence")
+                or agreement.get("sequence")
+                or ""
+            ),
         }
 
     def _load_agreement(self) -> None:
-        customer_idn = _lookup(self.account, "customerIDN")
-        account_sequence = _lookup(self.account, "accountSequence")
+        customer_idn = _lookup(self.account, "customerIDN") or _lookup(
+            self.account.get("customer"), "idn"
+        )
+        account_sequence = _lookup(self.account, "accountSequence") or self.account.get(
+            "sequence"
+        )
         if customer_idn is None or account_sequence is None:
             self.agreement = self.account
             return
