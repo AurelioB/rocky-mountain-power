@@ -5,7 +5,7 @@ import os.path
 import sys
 import time
 import dataclasses
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time as datetime_time, timedelta
 from enum import Enum
 import json
 import logging
@@ -277,8 +277,9 @@ class RockyMountainPowerUtility:
             #   "displayDollarAmount":"Y"
             # },
             for d in details.get("getUsageForDateRangeResponseBody", {}).get("dailyUsageList", {}).get("usgHistoryLineItem", []):
-                end_time = arrow.get(datetime.fromisoformat(d["usagePeriodEndDate"]), self.TZ).datetime
-                start_time = end_time - timedelta(days=1)
+                usage_date = date.fromisoformat(d["usagePeriodEndDate"])
+                start_time = arrow.get(datetime.combine(usage_date, datetime_time.min), self.TZ).datetime
+                end_time = start_time + timedelta(days=1)
                 amount = None
                 try:
                     amount = locale.atof(d.get("dollerAmount", "").strip("$")) or None
@@ -410,6 +411,7 @@ class Forecast:
     forecasted_cost: float
     forecasted_cost_low: float
     forecasted_cost_high: float
+    energy_consumption: Optional[float]
 
 
 @dataclasses.dataclass
@@ -482,6 +484,13 @@ class RockyMountainPower:
         self.utility.get_forecast()
         if self.utility.forecast:
             forecast = self.utility.forecast
+            start_date = arrow.get(date.fromisoformat(forecast["startDateForAMIAcctView"]), self.utility.TZ).datetime
+            end_date = arrow.get(date.fromisoformat(forecast["endDateForAMIAcctView"]), self.utility.TZ).datetime
+            energy_consumption = None
+            try:
+                energy_consumption = self.get_current_bill_energy_consumption(start_date, end_date)
+            except Exception:
+                _LOGGER.warning("Unable to fetch current bill energy consumption", exc_info=True)
             forecasts.append(
                 Forecast(
                     account=Account(
@@ -489,15 +498,33 @@ class RockyMountainPower:
                         uuid=self.account["accountNumber"],
                         utility_account_id=self.customer_id,
                     ),
-                    start_date=arrow.get(date.fromisoformat(forecast["startDateForAMIAcctView"]), self.utility.TZ).datetime,
-                    end_date=arrow.get(date.fromisoformat(forecast["endDateForAMIAcctView"]), self.utility.TZ).datetime,
+                    start_date=start_date,
+                    end_date=end_date,
                     current_date=arrow.get(date.today(), self.utility.TZ).datetime,
                     forecasted_cost=float(forecast.get("projectedCost", 0)),
                     forecasted_cost_low=float(forecast.get("projectedCostLow", 0)),
                     forecasted_cost_high=float(forecast.get("projectedCostHigh", 0)),
+                    energy_consumption=energy_consumption,
                 )
             )
         return forecasts
+
+    def get_current_bill_energy_consumption(
+        self,
+        start_date: datetime,
+        end_date: datetime,
+    ) -> float:
+        """Get kWh consumption for the current billing period."""
+        today = arrow.now(self.utility.TZ).date()
+        months = max(1, ((today - start_date.date()).days // 31) + 1)
+        reads = self.get_cost_reads(AggregateType.DAY, months)
+        start = start_date.date()
+        end = end_date.date()
+        return sum(
+            read.consumption
+            for read in reads
+            if start <= read.end_time.date() <= end
+        )
 
     def _get_account(self) -> Any:
         """Get account associated with the user."""

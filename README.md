@@ -39,6 +39,12 @@ Rocky Mountain Power account. You can turn it off from the "Manage account" link
 2. Password: enter your Rocky Mountain Power password
 3. Selenium host: leave the default if you're running the addon above
 
+## Sensors
+
+The integration exposes forecasted bill cost sensors and a current bill energy
+consumption sensor in kWh. It also imports historical usage/cost statistics into
+Home Assistant's recorder when Rocky Mountain Power makes the data available.
+
 ## Contributions are welcome!
 
 If you want to contribute to this please read the [Contribution guidelines](CONTRIBUTING.md)

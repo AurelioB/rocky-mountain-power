@@ -1,17 +1,21 @@
 """Coordinator to handle Rocky Mountain Power connections."""
-from datetime import timedelta
+from datetime import datetime, timedelta
 import logging
 from types import MappingProxyType
 from typing import Any, cast
 
 from homeassistant.components.recorder import get_instance
-from homeassistant.components.recorder.models import StatisticData, StatisticMetaData
+from homeassistant.components.recorder.models import (
+    StatisticData,
+    StatisticMeanType,
+    StatisticMetaData,
+)
 from homeassistant.components.recorder.statistics import (
     async_add_external_statistics,
     get_last_statistics,
     statistics_during_period,
 )
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, UnitOfEnergy, UnitOfVolume
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, UnitOfEnergy
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -158,17 +162,21 @@ class RockyMountainPowerCoordinator(DataUpdateCoordinator[dict[str, Forecast]]):
         cost_metadata = StatisticMetaData(
             has_mean=False,
             has_sum=True,
+            mean_type=StatisticMeanType.NONE,
             name=f"{name_prefix} cost",
             source=DOMAIN,
             statistic_id=cost_statistic_id,
+            unit_class="unitless",
             unit_of_measurement=None,
         )
         consumption_metadata = StatisticMetaData(
             has_mean=False,
             has_sum=True,
+            mean_type=StatisticMeanType.NONE,
             name=f"{name_prefix} consumption",
             source=DOMAIN,
             statistic_id=consumption_statistic_id,
+            unit_class="energy",
             unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         )
 
@@ -180,18 +188,43 @@ class RockyMountainPowerCoordinator(DataUpdateCoordinator[dict[str, Forecast]]):
     async def _async_get_all_cost_reads(self) -> list[CostRead]:
         """Get all cost reads since account activation but at different resolutions depending on age.
 
-        - month resolution for all years (since account activation)
-        - day resolution for past 2 years
-        - hour resolution for past month
-        """
-        cost_reads = []
+        Rocky Mountain Power serves overlapping ranges for each resolution.
+        Keep only one resolution for any point in time so Home Assistant's
+        cumulative statistics do not double-count the same consumption.
 
-        cost_reads.extend(await self.hass.async_add_executor_job(self.api.get_cost_reads, AggregateType.MONTH))
-        cost_reads.extend(await self.hass.async_add_executor_job(self.api.get_cost_reads, AggregateType.DAY, 24))
-        cost_reads.extend(await self.hass.async_add_executor_job(self.api.get_cost_reads, AggregateType.HOUR, 60))
+        - month resolution until daily data begins
+        - day resolution until hourly data begins
+        - hour resolution for recent data
+        """
+        month_reads = await self.hass.async_add_executor_job(self.api.get_cost_reads, AggregateType.MONTH)
+        day_reads = await self.hass.async_add_executor_job(self.api.get_cost_reads, AggregateType.DAY, 24)
+        hour_reads = await self.hass.async_add_executor_job(self.api.get_cost_reads, AggregateType.HOUR, 60)
+
+        day_start = _oldest_start_time(day_reads)
+        hour_start = _oldest_start_time(hour_reads)
+
+        cost_reads = [
+            read
+            for read in month_reads
+            if day_start is None or read.end_time < day_start
+        ]
+        cost_reads.extend(
+            read
+            for read in day_reads
+            if hour_start is None or read.end_time < hour_start
+        )
+        cost_reads.extend(hour_reads)
+        cost_reads.sort(key=lambda read: read.start_time)
         return cost_reads
 
     async def _async_get_recent_cost_reads(self) -> list[CostRead]:
         """Get hourly reads within the past 7 days to allow corrections in data from utilities."""
         cost_reads = await self.hass.async_add_executor_job(self.api.get_cost_reads, AggregateType.HOUR, 7)
         return cost_reads
+
+
+def _oldest_start_time(reads: list[CostRead]) -> datetime | None:
+    """Return the oldest start time in a set of reads."""
+    if not reads:
+        return None
+    return min(read.start_time for read in reads)

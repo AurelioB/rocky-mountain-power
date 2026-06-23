@@ -11,6 +11,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -26,7 +27,7 @@ from .rocky_mountain_power import Forecast
 class RockyMountainPowerEntityDescriptionMixin:
     """Mixin values for required keys."""
 
-    value_fn: Callable[[Forecast], str | float]
+    value_fn: Callable[[Forecast], StateType]
 
 
 @dataclass
@@ -64,6 +65,15 @@ ELEC_SENSORS: tuple[RockyMountainPowerEntityDescription, ...] = (
         state_class=SensorStateClass.TOTAL,
         suggested_display_precision=0,
         value_fn=lambda data: data.forecasted_cost_high,
+    ),
+    RockyMountainPowerEntityDescription(
+        key="elec_current_bill_energy_consumption",
+        name="Current bill energy consumption",
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        state_class=SensorStateClass.TOTAL,
+        suggested_display_precision=2,
+        value_fn=lambda data: data.energy_consumption,
     ),
 )
 
