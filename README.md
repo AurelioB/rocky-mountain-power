@@ -12,7 +12,7 @@
 
 _Component to integrate with [Rocky Mountain Power][rmp]._
 
-![example][exampleimg]
+<img src="rmp.png" alt="Rocky Mountain Power" width="250">
 
 ## Installation
 
@@ -82,7 +82,6 @@ If you want to contribute to this please read the [Contribution guidelines](CONT
 [hacsbadge]: https://img.shields.io/badge/HACS-Custom-orange.svg?style=for-the-badge
 [hacs-repository-badge]: https://my.home-assistant.io/badges/hacs_repository.svg
 [hacs-repository]: https://my.home-assistant.io/redirect/hacs_repository/?owner=AurelioB&repository=rocky-mountain-power&category=integration
-[exampleimg]: rmp.png
 [forum-shield]: https://img.shields.io/badge/community-forum-brightgreen.svg?style=for-the-badge
 [forum]: https://community.home-assistant.io/
 [license-shield]: https://img.shields.io/github/license/AurelioB/rocky-mountain-power.svg?style=for-the-badge
